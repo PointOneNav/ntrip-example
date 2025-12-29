@@ -79,13 +79,10 @@ nc localhost 5000
 ```
 
 **Example: Connect with Python**
+
+There is a full featured example in the python folder which connects to the TCP port and generates a live webpage with position and signal strength.
 ```python
-import socket
-s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-s.connect(('localhost', 5000))
-while True:
-    data = s.recv(1024)
-    print(data.decode(), end='')
+python python/gps_plotter.py 
 ```
 
 ## Usage
