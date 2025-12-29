@@ -654,6 +654,17 @@ def get_html_content() -> str:
             };
             
             Plotly.newPlot('map', data, layout, config);
+            
+            // Double-click to recenter on current position
+            document.getElementById('map').on('plotly_doubleclick', function() {
+                if (positions.length > 0) {
+                    const current = positions[positions.length - 1];
+                    Plotly.relayout('map', {
+                        'mapbox.center': { lat: current.lat, lon: current.lon }
+                    });
+                    lastCenter = { lat: current.lat, lon: current.lon };
+                }
+            });
         }
         
         function initSnrChart() {
