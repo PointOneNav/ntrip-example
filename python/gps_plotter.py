@@ -192,13 +192,14 @@ class GpsReceiver:
         self.max_positions = max_positions
         self.positions: deque[GpsPosition] = deque(maxlen=max_positions)
         self.current_position: Optional[GpsPosition] = None
-        self.satellites: dict[str, SatelliteInfo] = {}  # keyed by "constellation-prn"
+        self.satellites: dict[str, tuple[SatelliteInfo, float]] = {}  # keyed by "constellation-prn", value is (info, timestamp)
         self.running = False
         self.connected = False
         self.socket: Optional[socket.socket] = None
         self.thread: Optional[threading.Thread] = None
         self.lock = threading.Lock()
         self.error_message: Optional[str] = None
+        self.satellite_timeout = 3.0  # seconds before evicting stale satellites
     
     def start(self):
         self.running = True
@@ -251,10 +252,11 @@ class GpsReceiver:
                                 if 'GSV' in line:
                                     sats = parse_gsv(line)
                                     if sats:
+                                        now = time.time()
                                         with self.lock:
                                             for sat in sats:
                                                 key = f"{sat.constellation}-{sat.prn}"
-                                                self.satellites[key] = sat
+                                                self.satellites[key] = (sat, now)
                     
                     except socket.timeout:
                         continue
@@ -286,7 +288,14 @@ class GpsReceiver:
     
     def get_satellites(self) -> list[SatelliteInfo]:
         with self.lock:
-            return list(self.satellites.values())
+            now = time.time()
+            # Evict stale satellites
+            stale_keys = [k for k, (sat, ts) in self.satellites.items() 
+                          if now - ts > self.satellite_timeout]
+            for k in stale_keys:
+                del self.satellites[k]
+            # Return current satellites
+            return [sat for sat, ts in self.satellites.values()]
     
     def get_data_json(self) -> dict:
         """Get current data as JSON-serializable dict"""
@@ -402,47 +411,62 @@ def get_html_content() -> str:
 <head>
     <title>GPS Position Tracker</title>
     <script src="https://cdn.plot.ly/plotly-3.3.1.min.js" charset="utf-8"></script>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <style>
+        * {
+            box-sizing: border-box;
+        }
+        html, body {
+            margin: 0;
+            padding: 0;
+            height: 100%;
+            overflow: hidden;
+        }
         body {
             font-family: Arial, sans-serif;
-            margin: 0;
-            padding: 10px;
+            padding: 8px;
             background: #1a1a1a;
             color: #fff;
+            display: flex;
+            flex-direction: column;
         }
         #header {
             display: flex;
             justify-content: space-between;
             align-items: center;
-            margin-bottom: 10px;
+            margin-bottom: 8px;
+            flex-shrink: 0;
         }
         #logo {
             height: 50px;
         }
         #status {
-            padding: 10px;
+            padding: 8px 12px;
             border-radius: 5px;
             font-weight: bold;
+            font-size: 14px;
         }
         .connected { background: #2d5a2d; }
         .disconnected { background: #5a2d2d; }
         #info {
             display: flex;
-            gap: 20px;
-            margin-bottom: 10px;
+            gap: 8px;
+            margin-bottom: 8px;
             flex-wrap: wrap;
+            flex-shrink: 0;
         }
         .info-box {
             background: #2d2d2d;
-            padding: 10px 20px;
+            padding: 6px 12px;
             border-radius: 5px;
+            min-width: 70px;
         }
         .info-box .label {
             color: #888;
-            font-size: 12px;
+            font-size: 10px;
         }
         .info-box .value {
-            font-size: 18px;
+            font-size: 14px;
             font-weight: bold;
         }
         .fix-0 { color: #f44; }
@@ -450,14 +474,71 @@ def get_html_content() -> str:
         .fix-2 { color: #4af; }
         .fix-4 { color: #4f4; }
         .fix-5 { color: #ff4; }
+        #map-container {
+            flex: 1;
+            min-height: 0;
+            display: flex;
+            flex-direction: column;
+        }
         #map {
             width: 100%;
-            height: calc(100vh - 320px);
+            flex: 1;
+            min-height: 100px;
         }
         #snr-chart {
             width: 100%;
-            height: 150px;
-            margin-top: 10px;
+            height: 120px;
+            flex-shrink: 0;
+            margin-top: 8px;
+        }
+        
+        /* Landscape mobile */
+        @media (max-height: 500px) {
+            #info {
+                gap: 4px;
+                margin-bottom: 4px;
+            }
+            .info-box {
+                padding: 4px 8px;
+                min-width: 60px;
+            }
+            .info-box .label {
+                font-size: 8px;
+            }
+            .info-box .value {
+                font-size: 12px;
+            }
+            #logo {
+                height: 30px;
+            }
+            #status {
+                padding: 6px 10px;
+                font-size: 12px;
+            }
+            #snr-chart {
+                height: 80px;
+                margin-top: 4px;
+            }
+            body {
+                padding: 4px;
+            }
+            #header {
+                margin-bottom: 4px;
+            }
+        }
+        
+        /* Portrait mobile */
+        @media (max-width: 600px) {
+            .info-box {
+                padding: 4px 8px;
+                min-width: 55px;
+            }
+            .info-box .label {
+                font-size: 9px;
+            }
+            .info-box .value {
+                font-size: 13px;
+            }
         }
     </style>
 </head>
@@ -498,8 +579,10 @@ def get_html_content() -> str:
             <div class="value" id="points">0</div>
         </div>
     </div>
-    <div id="map"></div>
-    <div id="snr-chart"></div>
+    <div id="map-container">
+        <div id="map"></div>
+        <div id="snr-chart"></div>
+    </div>
     
     <script>
         const FIX_NAMES = {
@@ -688,6 +771,16 @@ def get_html_content() -> str:
         initSnrChart();
         fetchData();
         setInterval(fetchData, 1000);
+        
+        // Handle window resize
+        let resizeTimeout;
+        window.addEventListener('resize', function() {
+            clearTimeout(resizeTimeout);
+            resizeTimeout = setTimeout(function() {
+                Plotly.Plots.resize('map');
+                Plotly.Plots.resize('snr-chart');
+            }, 100);
+        });
     </script>
 </body>
 </html>
