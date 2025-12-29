@@ -1,0 +1,207 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>GPS Position Tracker</title>
+    <script src="https://cdn.plot.ly/plotly-latest.min.js"></script>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            margin: 0;
+            padding: 10px;
+            background: #1a1a1a;
+            color: #fff;
+        }
+        #status {
+            padding: 10px;
+            margin-bottom: 10px;
+            border-radius: 5px;
+            font-weight: bold;
+        }
+        .connected { background: #2d5a2d; }
+        .disconnected { background: #5a2d2d; }
+        #info {
+            display: flex;
+            gap: 20px;
+            margin-bottom: 10px;
+            flex-wrap: wrap;
+        }
+        .info-box {
+            background: #2d2d2d;
+            padding: 10px 20px;
+            border-radius: 5px;
+        }
+        .info-box .label {
+            color: #888;
+            font-size: 12px;
+        }
+        .info-box .value {
+            font-size: 18px;
+            font-weight: bold;
+        }
+        .fix-0 { color: #f44; }
+        .fix-1 { color: #fa4; }
+        .fix-2 { color: #4af; }
+        .fix-4 { color: #4f4; }
+        .fix-5 { color: #ff4; }
+        #map {
+            width: 100%;
+            height: calc(100vh - 150px);
+        }
+    </style>
+</head>
+<body>
+    <div id="status" class="disconnected">Connecting...</div>
+    <div id="info">
+        <div class="info-box">
+            <div class="label">Latitude</div>
+            <div class="value" id="lat">--</div>
+        </div>
+        <div class="info-box">
+            <div class="label">Longitude</div>
+            <div class="value" id="lon">--</div>
+        </div>
+        <div class="info-box">
+            <div class="label">Altitude</div>
+            <div class="value" id="alt">--</div>
+        </div>
+        <div class="info-box">
+            <div class="label">Satellites</div>
+            <div class="value" id="sats">--</div>
+        </div>
+        <div class="info-box">
+            <div class="label">Fix Quality</div>
+            <div class="value" id="fix">--</div>
+        </div>
+        <div class="info-box">
+            <div class="label">HDOP</div>
+            <div class="value" id="hdop">--</div>
+        </div>
+        <div class="info-box">
+            <div class="label">Points</div>
+            <div class="value" id="points">0</div>
+        </div>
+    </div>
+    <div id="map"></div>
+    
+    <script>
+        const FIX_NAMES = {
+            0: 'No Fix',
+            1: 'GPS',
+            2: 'DGPS',
+            4: 'RTK Fixed',
+            5: 'RTK Float'
+        };
+        
+        const FIX_COLORS = {
+            0: 'red',
+            1: 'orange',
+            2: 'blue',
+            4: 'green',
+            5: 'yellow'
+        };
+        
+        let positions = [];
+        
+        function initMap() {
+            const data = [
+                {
+                    type: 'scattermapbox',
+                    lat: [],
+                    lon: [],
+                    mode: 'lines',
+                    line: { width: 2, color: 'blue' },
+                    name: 'Track'
+                },
+                {
+                    type: 'scattermapbox',
+                    lat: [],
+                    lon: [],
+                    mode: 'markers',
+                    marker: { size: 8, color: [] },
+                    name: 'Positions'
+                },
+                {
+                    type: 'scattermapbox',
+                    lat: [],
+                    lon: [],
+                    mode: 'markers',
+                    marker: { size: 15, color: 'red' },
+                    name: 'Current'
+                }
+            ];
+            
+            const layout = {
+                mapbox: {
+                    style: 'open-street-map',
+                    center: { lat: 37.7749, lon: -122.4194 },
+                    zoom: 15
+                },
+                showlegend: false,
+                margin: { l: 0, r: 0, t: 0, b: 0 }
+            };
+            
+            Plotly.newPlot('map', data, layout);
+        }
+        
+        function updateMap() {
+            if (positions.length === 0) return;
+            
+            const lats = positions.map(p => p.lat);
+            const lons = positions.map(p => p.lon);
+            const colors = positions.map(p => FIX_COLORS[p.fix] || 'gray');
+            
+            const current = positions[positions.length - 1];
+            
+            Plotly.update('map', {
+                lat: [lats, lats, [current.lat]],
+                lon: [lons, lons, [current.lon]],
+                'marker.color': [null, colors, null]
+            });
+            
+            // Recenter occasionally
+            if (positions.length % 10 === 1) {
+                Plotly.relayout('map', {
+                    'mapbox.center': { lat: current.lat, lon: current.lon }
+                });
+            }
+        }
+        
+        function updateInfo(pos) {
+            document.getElementById('lat').textContent = pos.lat.toFixed(6) + '\u00b0';
+            document.getElementById('lon').textContent = pos.lon.toFixed(6) + '\u00b0';
+            document.getElementById('alt').textContent = pos.alt.toFixed(1) + ' m';
+            document.getElementById('sats').textContent = pos.sats;
+            document.getElementById('hdop').textContent = pos.hdop.toFixed(1);
+            document.getElementById('points').textContent = positions.length;
+            
+            const fixEl = document.getElementById('fix');
+            fixEl.textContent = FIX_NAMES[pos.fix] || 'Unknown';
+            fixEl.className = 'value fix-' + pos.fix;
+        }
+        
+        async function fetchData() {
+            try {
+                const response = await fetch('gps_data.json?' + Date.now());
+                const data = await response.json();
+                
+                document.getElementById('status').className = 
+                    data.connected ? 'connected' : 'disconnected';
+                document.getElementById('status').textContent = 
+                    data.connected ? 'Connected' : 'Disconnected: ' + (data.error || 'Unknown');
+                
+                if (data.positions && data.positions.length > 0) {
+                    positions = data.positions;
+                    updateMap();
+                    updateInfo(positions[positions.length - 1]);
+                }
+            } catch (e) {
+                console.error('Fetch error:', e);
+            }
+        }
+        
+        initMap();
+        fetchData();
+        setInterval(fetchData, 1000);
+    </script>
+</body>
+</html>

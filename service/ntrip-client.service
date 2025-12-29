@@ -1,0 +1,35 @@
+[Unit]
+Description=NTRIP Client - RTCM Correction Service
+Documentation=https://github.com/your-repo/ntrip-client
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ntrip
+Group=dialout
+ExecStart=/usr/local/bin/ntrip_client /etc/ntrip/config.json
+Restart=always
+RestartSec=10
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=ntrip-client
+
+# Security hardening
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ProtectKernelTunables=true
+ProtectControlGroups=true
+
+# Allow access to serial devices
+SupplementaryGroups=dialout
+DeviceAllow=/dev/ttyUSB* rw
+DeviceAllow=/dev/ttyACM* rw
+DeviceAllow=/dev/serial/* rw
+
+[Install]
+WantedBy=multi-user.target

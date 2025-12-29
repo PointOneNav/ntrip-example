@@ -6,7 +6,7 @@ A lightweight, cross-platform NTRIP client for Linux, macOS, and Windows that:
 - Reads GGA NMEA messages from a GPS receiver on a serial port
 - Sends GGA position to the NTRIP caster for VRS (Virtual Reference Station) support
 - Forwards RTCM corrections to the GPS receiver
-- Optionally forwards all serial data to a TCP socket
+- Runs a TCP server to forward serial data to multiple clients
 
 ## Building
 
@@ -38,16 +38,15 @@ Create a `config.json` file:
 
 ```json
 {
-    "ntrip_host": "ntrip.example.com",
+    "ntrip_host": "truertk.pointonenav.com",
     "ntrip_port": 2101,
-    "ntrip_mountpoint": "RTCM3_MOUNT",
+    "ntrip_mountpoint": "POALRIS",
     "ntrip_user": "your_username",
     "ntrip_password": "your_password",
     
     "serial_port": "/dev/ttyUSB0",
     "serial_baud": 115200,
     
-    "tcp_host": "localhost",
     "tcp_port": 5000,
     
     "gga_interval_sec": 10
@@ -65,11 +64,29 @@ Create a `config.json` file:
 | `ntrip_mountpoint` | Yes | - | Mountpoint name |
 | `ntrip_user` | No | - | Username for authentication |
 | `ntrip_password` | No | - | Password for authentication |
-| `serial_port` | Yes | - | Serial port path (e.g., `/dev/ttyUSB0`, `/dev/tty.usbserial`) |
+| `serial_port` | Yes | - | Serial port path (e.g., `/dev/ttyUSB0`, `COM3`) |
 | `serial_baud` | No | 9600 | Baud rate (4800, 9600, 19200, 38400, 57600, 115200, 230400) |
-| `tcp_host` | No | - | TCP host for forwarding serial data |
-| `tcp_port` | No | 0 | TCP port for forwarding (0 = disabled) |
+| `tcp_port` | No | 0 | TCP server port for forwarding serial data (0 = disabled) |
 | `gga_interval_sec` | No | 10 | Interval for sending GGA to caster |
+
+## TCP Server
+
+When `tcp_port` is set, the client starts a TCP server that forwards all serial data to connected clients. Multiple clients can connect simultaneously.
+
+**Example: Connect with netcat**
+```bash
+nc localhost 5000
+```
+
+**Example: Connect with Python**
+```python
+import socket
+s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+s.connect(('localhost', 5000))
+while True:
+    data = s.recv(1024)
+    print(data.decode(), end='')
+```
 
 ## Usage
 
