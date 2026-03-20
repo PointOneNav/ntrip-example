@@ -31,6 +31,7 @@ public:
     
     // Other settings
     int gga_interval_sec = 10;
+    bool log_serial = true;  // Log raw serial data to a timestamped .log file
     
     bool parse(const std::string& filename) {
         std::ifstream file(filename);
@@ -54,7 +55,8 @@ public:
         tcp_port = get_int(content, "tcp_port", 0);
         
         gga_interval_sec = get_int(content, "gga_interval_sec", 10);
-        
+        log_serial = get_bool(content, "log_serial", true);
+
         return validate();
     }
     
@@ -81,7 +83,8 @@ public:
         if (tcp_port > 0) {
             std::cout << "  TCP Server: port " << tcp_port << "\n";
         }
-        std::cout << "  GGA Interval: " << gga_interval_sec << "s\n";
+        std::cout << "  GGA Interval: " << gga_interval_sec << "s\n"
+                  << "  Serial Logging: " << (log_serial ? "enabled" : "disabled") << "\n";
     }
     
     // Static helper methods for parsing JSON - can be used externally

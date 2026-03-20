@@ -13,12 +13,16 @@
  */
 
 #include <iostream>
+#include <fstream>
 #include <string>
 #include <thread>
 #include <atomic>
 #include <mutex>
 #include <chrono>
 #include <csignal>
+#include <ctime>
+#include <iomanip>
+#include <sstream>
 
 #include "json_config.h"
 #include "serial_port.h"
@@ -211,7 +215,7 @@ void ntrip_thread(const JsonConfig& config, SerialPort& serial) {
 }
 
 // Serial reader thread - also manages TCP server for forwarding
-void serial_thread(SerialPort& serial, TcpServer* tcp_server) {
+void serial_thread(SerialPort& serial, TcpServer* tcp_server, std::ofstream* log_file) {
     std::string nmea_buffer;
     char buf[1024];
     
@@ -245,6 +249,12 @@ void serial_thread(SerialPort& serial, TcpServer* tcp_server) {
         // Broadcast to all connected TCP clients
         if (tcp_server && tcp_server->is_listening()) {
             tcp_server->broadcast(buf, n);
+        }
+
+        // Log raw data to file
+        if (log_file && log_file->is_open()) {
+            log_file->write(buf, n);
+            log_file->flush();
         }
         
         // Parse for GGA
@@ -343,9 +353,35 @@ int main(int argc, char* argv[]) {
         }
     }
     
+    // Open serial log file if enabled
+    std::ofstream log_file;
+    std::ofstream* log_ptr = nullptr;
+
+    if (config.log_serial) {
+        auto now = std::chrono::system_clock::now();
+        std::time_t t = std::chrono::system_clock::to_time_t(now);
+        std::tm tm_local;
+#ifdef _WIN32
+        localtime_s(&tm_local, &t);
+#else
+        localtime_r(&t, &tm_local);
+#endif
+        std::ostringstream ss;
+        ss << std::put_time(&tm_local, "%Y-%m-%d_%H%M%S") << ".log";
+        std::string log_filename = ss.str();
+
+        log_file.open(log_filename, std::ios::binary);
+        if (log_file.is_open()) {
+            std::cout << "Logging serial data to: " << log_filename << std::endl;
+            log_ptr = &log_file;
+        } else {
+            std::cerr << "Warning: Could not open log file: " << log_filename << std::endl;
+        }
+    }
+
     // Start threads
     std::thread ntrip_th(ntrip_thread, std::cref(config), std::ref(serial));
-    std::thread serial_th(serial_thread, std::ref(serial), tcp_ptr);
+    std::thread serial_th(serial_thread, std::ref(serial), tcp_ptr, log_ptr);
     
     // Wait for threads
     serial_th.join();
@@ -354,6 +390,9 @@ int main(int argc, char* argv[]) {
     // Cleanup
     serial.close();
     tcp_server.close();
+    if (log_file.is_open()) {
+        log_file.close();
+    }
     TcpSocket::cleanup();
     
     std::cout << "Shutdown complete" << std::endl;
