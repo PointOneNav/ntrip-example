@@ -70,7 +70,7 @@ public:
                     size_line_.push_back(c);
                 }
             } else if (state_ == READ_DATA) {
-                size_t take = std::min((size_t)(n - i), remaining_);
+                size_t take = ((size_t)(n - i) < remaining_) ? (size_t)(n - i) : remaining_;
                 out.append(in + i, take);
                 i += (int)take;
                 remaining_ -= take;
