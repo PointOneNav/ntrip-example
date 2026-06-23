@@ -47,6 +47,51 @@ std::string base64_encode(const std::string& input) {
     return output;
 }
 
+// Minimal streaming decoder for HTTP Transfer-Encoding: chunked.
+// Feed raw bytes via decode(); decoded payload is appended to `out`.
+class ChunkedDecoder {
+public:
+    bool decode(const char* in, int n, std::string& out) {
+        for (int i = 0; i < n; ) {
+            if (state_ == DONE) return true;
+            if (state_ == FAILED) return false;
+            if (state_ == READ_SIZE) {
+                char c = in[i++];
+                if (c == '\n') {
+                    if (!size_line_.empty() && size_line_.back() == '\r') size_line_.pop_back();
+                    auto semi = size_line_.find(';');
+                    if (semi != std::string::npos) size_line_.resize(semi);
+                    try {
+                        remaining_ = std::stoul(size_line_, nullptr, 16);
+                    } catch (...) { state_ = FAILED; return false; }
+                    size_line_.clear();
+                    state_ = (remaining_ == 0) ? DONE : READ_DATA;
+                } else {
+                    size_line_.push_back(c);
+                }
+            } else if (state_ == READ_DATA) {
+                size_t take = ((size_t)(n - i) < remaining_) ? (size_t)(n - i) : remaining_;
+                out.append(in + i, take);
+                i += (int)take;
+                remaining_ -= take;
+                if (remaining_ == 0) state_ = SKIP_CR;
+            } else if (state_ == SKIP_CR) {
+                if (in[i] == '\r') i++;
+                state_ = SKIP_LF;
+            } else if (state_ == SKIP_LF) {
+                if (in[i] == '\n') i++;
+                state_ = READ_SIZE;
+            }
+        }
+        return true;
+    }
+private:
+    enum State { READ_SIZE, READ_DATA, SKIP_CR, SKIP_LF, DONE, FAILED };
+    State state_ = READ_SIZE;
+    size_t remaining_ = 0;
+    std::string size_line_;
+};
+
 // Global state
 std::atomic<bool> g_running{true};
 std::mutex g_gga_mutex;
@@ -112,40 +157,99 @@ void ntrip_thread(const JsonConfig& config, SerialPort& serial) {
             continue;
         }
         
-        // Read response header
+        // Read response header. Two flavors:
+        //   NTRIP v1 (ICY): "ICY 200 OK\r\n" followed immediately by RTCM bytes.
+        //   NTRIP v2/HTTP: "HTTP/1.x 200 OK\r\n<headers>\r\n\r\n" then body (maybe chunked).
         char buf[4096];
         std::string response;
         bool header_done = false;
-        
+        bool is_icy = false;
+        bool chunked = false;
+        size_t header_end = 0;
+
         while (g_running && !header_done) {
             int ret = ntrip.wait_readable(5);
-            
+
             if (ret <= 0) {
                 std::cerr << "Timeout waiting for NTRIP response" << std::endl;
                 break;
             }
-            
-            int n = ntrip.read(buf, sizeof(buf) - 1);
+
+            int n = ntrip.read(buf, sizeof(buf));
             if (n <= 0) break;
-            
-            buf[n] = '\0';
-            response += buf;
-            
-            if (response.find("\r\n\r\n") != std::string::npos) {
-                header_done = true;
+
+            response.append(buf, n);
+
+            if (response.size() >= 3 && response.compare(0, 3, "ICY") == 0) {
+                size_t eol = response.find("\r\n");
+                if (eol != std::string::npos) {
+                    is_icy = true;
+                    header_end = eol + 2;
+                    header_done = true;
+                }
+            } else if (response.size() >= 4 && response.compare(0, 4, "HTTP") == 0) {
+                size_t eoh = response.find("\r\n\r\n");
+                if (eoh != std::string::npos) {
+                    header_end = eoh + 4;
+                    header_done = true;
+                }
+            } else if (response.size() > 16) {
+                break;  // Not a recognizable NTRIP/HTTP reply
             }
         }
-        
-        if (!header_done || response.find("ICY 200 OK") == std::string::npos) {
+
+        bool ok = false;
+        if (header_done) {
+            if (is_icy) {
+                ok = response.find("ICY 200 OK") == 0;
+            } else if (response.size() >= 12 &&
+                       (response.compare(0, 9, "HTTP/1.0 ") == 0 ||
+                        response.compare(0, 9, "HTTP/1.1 ") == 0)) {
+                ok = response.compare(9, 3, "200") == 0;
+                // Case-insensitive scan for chunked transfer-encoding
+                std::string hdrs = response.substr(0, header_end);
+                for (auto& c : hdrs) c = (char)std::tolower((unsigned char)c);
+                if (hdrs.find("transfer-encoding:") != std::string::npos &&
+                    hdrs.find("chunked") != std::string::npos) {
+                    chunked = true;
+                }
+            }
+        }
+
+        if (!ok) {
             std::cerr << "NTRIP connection failed. Response:\n" << response << std::endl;
             ntrip.close();
             std::this_thread::sleep_for(std::chrono::seconds(5));
             continue;
         }
+
+        std::cout << "NTRIP connected successfully!"
+                  << (chunked ? " (chunked)" : "") << std::endl;
+
+        ChunkedDecoder decoder;
+
+        // Forward any RTCM bytes that arrived alongside the header.
+        if (header_end < response.size()) {
+            const char* extra = response.data() + header_end;
+            int extra_len = (int)(response.size() - header_end);
+            if (serial.is_open()) {
+                if (chunked) {
+                    std::string decoded;
+                    if (!decoder.decode(extra, extra_len, decoded)) {
+                        std::cerr << "Chunked decode error in initial buffer" << std::endl;
+                        ntrip.close();
+                        std::this_thread::sleep_for(std::chrono::seconds(5));
+                        continue;
+                    }
+                    if (!decoded.empty()) serial.write(decoded.data(), (int)decoded.size());
+                } else {
+                    serial.write(extra, extra_len);
+                }
+            }
+        }
         
-        std::cout << "NTRIP connected successfully!" << std::endl;
-        
-        auto last_gga_time = std::chrono::steady_clock::now();
+        // Backdate so the first GGA is sent as soon as one is available, not after a full interval.
+        auto last_gga_time = std::chrono::steady_clock::now() - std::chrono::seconds(config.gga_interval_sec);
         auto last_data_time = std::chrono::steady_clock::now();
         const int receive_timeout_sec = 30;
         
@@ -165,13 +269,24 @@ void ntrip_thread(const JsonConfig& config, SerialPort& serial) {
                     std::cerr << "NTRIP connection lost" << std::endl;
                     break;
                 }
-                
+
                 // Update last data time
                 last_data_time = std::chrono::steady_clock::now();
-                
+
                 // Write RTCM corrections to GPS receiver
                 if (serial.is_open()) {
-                    serial.write(buf, n);
+                    if (chunked) {
+                        std::string decoded;
+                        if (!decoder.decode(buf, n, decoded)) {
+                            std::cerr << "Chunked decode error" << std::endl;
+                            break;
+                        }
+                        if (!decoded.empty()) {
+                            serial.write(decoded.data(), (int)decoded.size());
+                        }
+                    } else {
+                        serial.write(buf, n);
+                    }
                 }
             }
             

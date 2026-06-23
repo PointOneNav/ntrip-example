@@ -40,7 +40,7 @@ Create a `config.json` file:
 {
     "ntrip_host": "truertk.pointonenav.com",
     "ntrip_port": 2101,
-    "ntrip_mountpoint": "POALRIS",
+    "ntrip_mountpoint": "POLARIS",
     "ntrip_user": "your_username",
     "ntrip_password": "your_password",
     
