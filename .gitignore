@@ -4,3 +4,5 @@ ntrip_client
 python/gps_map.html
 
 config.json
+
+*.log
